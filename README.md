@@ -27,7 +27,7 @@ Timbal is organized into three layers, each building on the one below:
 
 ### [Framing Layer](spec/framing.md) — `Timbal/1.0`
 
-The foundation. Defines NDJSON frame encoding, message streaming (start/append/set), ULID-based ordering, and sync/reconnection. Transport-agnostic — works over WebSocket, SSE, HTTP chunked, or stdio.
+The foundation. Defines NDJSON frame encoding, message streaming (start/append/set), ULID-based ordering, sync/reconnection, and stream multiplexing. Transport-agnostic — works over WebSocket, SSE, HTTP chunked, or stdio. A single connection can carry multiple independent streams.
 
 ### [HTTP Protocol Layer](spec/http.md) — `Timbal HTTP/1.0`
 
@@ -64,6 +64,7 @@ The client can render immediately after the start frame — metadata tells it wh
 - **Metadata-first rendering** — Start frames carry metadata (type, sender), enabling UI rendering before content streams.
 - **Two streaming modes** — Text mode (metadata + content appends) for chat, object mode (JSON fragment appends) for structured data.
 - **Append-only with sync** — Clients reconnect and request only what they missed via timestamp cursors.
+- **Stream multiplexing** — A single connection can carry multiple independent streams (channels, threads, event feeds) via the `s` field. No more connection-per-thread.
 - **Transport-agnostic framing** — The same NDJSON frames work over WebSocket, SSE, HTTP chunked, or stdio pipes.
 
 ## Status

@@ -1,6 +1,6 @@
 # Timbal Framing Layer (Timbal/1.0)
 
-**tl;dr** — Timbal defines the framing layer for streaming agent chats over WebSocket/SSE/HTTP. Each message is a sortable ULID and its contents stream progressively as NDJSON frames. Start frames declare metadata upfront, enabling immediate UI rendering. Clients can request partial sync on reconnect.
+**tl;dr** — Timbal defines the framing layer for streaming agent chats over WebSocket/SSE/HTTP. Each message is a sortable ULID and its contents stream progressively as NDJSON frames. Start frames declare metadata upfront, enabling immediate UI rendering. Clients can request partial sync on reconnect. A single connection can multiplex multiple streams via the `s` field.
 
 ## 1. Overview
 
@@ -20,7 +20,7 @@ The framing layer is transport-agnostic and works over:
 * WebSockets
 * stdio pipes
 
-**Scope:** Thread/conversation scoping is out of scope for the framing layer and handled by the transport (e.g., separate WebSocket connections per thread, or thread ID in URL path).
+**Stream multiplexing:** A single connection can carry frames for multiple logical streams (channels, threads, event feeds) using the optional `s` field. See §9.
 
 ## 2. Key Properties
 
@@ -31,12 +31,15 @@ The framing layer is transport-agnostic and works over:
 * **Metadata-first rendering**: Start frames include metadata, enabling immediate UI rendering before content arrives.
 * **Incremental rendering**: For object streaming, clients use partial JSON parsing. For text streaming, content renders directly.
 * **Partial sync**: Clients can request history from a specific point on reconnect.
+* **Stream multiplexing**: A single connection can carry multiple independent message streams, identified by the `s` field.
 
 ## 3. Terminology
 
 * **Frame**: A single NDJSON record (one JSON object on one line).
-* **Message**: A logical item keyed by message ID `i`.
-* **Message ID (`i`)**: A ULID string; sortable order defines transcript order.
+* **Stream**: A logical grouping of messages, identified by stream ID `s`. What a stream represents (channel, thread, event feed) is application-defined.
+* **Stream ID (`s`)**: An opaque string identifying which stream a frame belongs to. Optional on single-stream connections.
+* **Message**: A logical item keyed by message ID `i`, belonging to a stream.
+* **Message ID (`i`)**: A ULID string; sortable order defines transcript order within a stream.
 * **Timestamp (`t`)**: ISO 8601 UTC timestamp with millisecond precision (e.g., `"2025-01-15T14:30:00.000Z"`). Timestamps MUST include milliseconds (`.000` through `.999`). Indicates when a frame was emitted.
 * **Metadata (`m`)**: Optional JSON object in start frame describing the message (e.g., `{"type": "agent"}`).
 * **Buffer**: The receiver's accumulated string for a message, built from append frames.
@@ -87,11 +90,16 @@ A frame MUST be one of:
 3. **Set/Reset**: replaces the entire message value, or deletes message
    `{"i":"<ulid>","t":"<timestamp>","v":<json object>}` or `{"i":"<ulid>","v":null}`
 
-4. **Sync**: requests message history from server
-   `{"request":"sync"}` or `{"request":"sync","since":"<timestamp>"}`
+4. **Sync**: requests stream history from server
+   `{"request":"sync"}` or `{"request":"sync","s":"<stream>","since":"<timestamp>"}`
 
-5. **Error**: communicates protocol-level errors (see §10.1)
+5. **Unsub**: unsubscribes from a stream (see §9)
+   `{"request":"unsub","s":"<stream>"}`
+
+6. **Error**: communicates protocol-level errors (see §11.1)
    `{"error":"<code>","message":"<description>"}`
+
+**Stream ID on all frames:** Any message frame (start, append, set) MAY include an `s` field identifying the stream. See §9 for multiplexing rules.
 
 ### 5.1 Start Frame
 
@@ -100,6 +108,7 @@ A frame MUST be one of:
 **Fields:**
 
 * `i` (required): message ULID
+* `s` (optional): stream ID (see §9)
 * `m` (optional): metadata JSON object
 
 **Metadata constraints:**
@@ -162,22 +171,39 @@ A frame MUST be one of:
 
 ### 5.4 Sync Frame
 
-**Meaning:** Client requests message history from server.
+**Meaning:** Client requests message history from server, optionally subscribing to a stream.
 
 **Fields:**
 
 * `request` (required): Must be `"sync"`
+* `s` (optional): Stream ID to sync. On multiplexed connections, this subscribes the client to the stream and requests its history. See §9.
 * `since` (optional): ISO 8601 UTC timestamp. If provided, server sends only messages with `t` greater than or equal to this value.
 
 **Note:** Sync frames do not have an `i` field—they are control messages, not message updates.
 
 **Receiver behavior (server):**
 
-* Query messages for the thread, filtered by `since` if provided.
-* Send a set frame (with `t` timestamp) for each completed message.
+* If `s` is provided, subscribe the client to that stream (if not already subscribed).
+* Query messages for the stream (or default stream), filtered by `since` if provided.
+* Send a set frame (with `t` timestamp and `s` if multiplexed) for each completed message.
 * If a message is currently streaming, client will receive it via append frames followed by a final set frame.
 
 **Retention policy:** Servers are not required to retain message history indefinitely. If `since` refers to a time beyond the server's retention window, the server MUST return all available messages instead. A server with zero retention (always returning all messages) is compliant.
+
+### 5.5 Unsub Frame
+
+**Meaning:** Client unsubscribes from a stream. Server MUST stop sending frames for that stream.
+
+**Fields:**
+
+* `request` (required): Must be `"unsub"`
+* `s` (required): Stream ID to unsubscribe from.
+
+**Receiver behavior (server):**
+
+* Remove the client from the stream's subscriber list.
+* Stop sending frames for that stream to this client.
+* If the client is not subscribed to the stream, ignore silently.
 
 ## 6. Message Value Rules (critical)
 
@@ -290,11 +316,127 @@ Server → {"i":"01J...008","a":" the forecast..."}
 
 The client receives frames with `t >= since`, which may include some duplicates but ensures nothing is missed. Duplicates are harmless—just overwrite by ULID. This also catches updates to older messages if they were modified at or after `since`.
 
+On a multiplexed connection, include `s` to sync a specific stream:
+
+```
+Client → {"request":"sync","s":"chat-general","since":"2025-01-15T14:30:00.000Z"}
+```
+
 ---
 
-## 9. UI Guidance (non-normative but recommended)
+## 9. Stream Multiplexing
 
-### 9.1 Metadata-First Rendering
+A single Timbal connection can carry frames for multiple independent **streams**. What a stream represents is application-defined — it could be a chat channel, a conversation thread, a system event feed, or any other logical grouping of messages.
+
+### 9.1 The `s` Field
+
+All message frames (start, append, set) MAY include an `s` field:
+
+```
+{"s":"stream-abc","i":"01J...","m":{"type":"agent"}}
+{"s":"stream-abc","i":"01J...","a":"Hello from stream abc"}
+{"s":"stream-xyz","i":"01J...","t":"...","v":{"type":"user","content":"Hello from stream xyz"}}
+```
+
+**Rules:**
+
+* `s` MUST be a string if present.
+* `s` is **optional** — connections carrying a single stream do not need it.
+* When a connection is multiplexed, servers MUST include `s` on **every** message frame (start, append, set). Clients MUST use `s` for routing — not connection-level state.
+* Message IDs (`i`) are unique within a stream. The same ULID MUST NOT appear in different streams on the same connection.
+* Each stream maintains its own independent message state (buffers, values, timestamps).
+
+### 9.2 Subscribing to Streams
+
+Clients subscribe to streams by sending a sync request with `s`:
+
+```json
+{"request": "sync", "s": "stream-abc"}
+{"request": "sync", "s": "stream-abc", "since": "2025-01-15T14:30:00.000Z"}
+```
+
+**Behavior:**
+
+* The server subscribes the client to the stream and sends its history (per §8).
+* A client MAY subscribe to multiple streams on the same connection.
+* Subscribing to an already-subscribed stream is idempotent — it re-syncs without duplicating the subscription.
+* History frames in the response MUST include `s` so the client can route them.
+
+### 9.3 Unsubscribing from Streams
+
+Clients unsubscribe by sending an unsub request:
+
+```json
+{"request": "unsub", "s": "stream-abc"}
+```
+
+**Behavior:**
+
+* The server stops sending frames for that stream to this client.
+* The client SHOULD discard local state for the stream (buffers, values).
+* Unsubscribing from a stream the client is not subscribed to is a no-op.
+
+### 9.4 Stream Isolation
+
+Streams are fully independent:
+
+* Each stream has its own message ordering (by ULID within the stream).
+* Each stream has its own sync cursor (`since` timestamp).
+* Subscribing/unsubscribing from one stream does not affect others.
+* A message belongs to exactly one stream.
+
+### 9.5 Single-Stream Connections
+
+When `s` is absent from all frames, the connection carries a single implicit "default stream." This is the common case for simple setups (e.g., one WebSocket per thread).
+
+Single-stream and multiplexed modes are **not mixed** on the same connection. If any frame includes `s`, all message frames on that connection SHOULD include `s`.
+
+### 9.6 Example: Multiplexed Connection
+
+Client subscribes to two streams and receives interleaved frames:
+
+```
+Client → {"request":"sync","s":"chat-general"}
+Client → {"request":"sync","s":"announcements"}
+
+Server → {"s":"chat-general","i":"01J...001","t":"...","v":{"type":"user","content":"Hey everyone"}}
+Server → {"s":"announcements","i":"01J...002","t":"...","v":{"type":"agent","content":"System update: v2.1 deployed"}}
+Server → {"s":"chat-general","i":"01J...003","m":{"type":"agent"}}
+Server → {"s":"chat-general","i":"01J...003","a":"Hi there!"}
+Server → {"s":"chat-general","i":"01J...003","t":"...","v":{"type":"agent","content":"Hi there!"}}
+```
+
+Client switches focus — unsubscribes from one stream, subscribes to another:
+
+```
+Client → {"request":"unsub","s":"chat-general"}
+Client → {"request":"sync","s":"chat-random"}
+
+Server → {"s":"chat-random","i":"01J...010","t":"...","v":{"type":"user","content":"Anyone seen the new release?"}}
+Server → {"s":"announcements","i":"01J...011","t":"...","v":{"type":"agent","content":"Maintenance window at 2am UTC"}}
+```
+
+No race condition — frames are self-describing. The client never needs to track "which stream am I on."
+
+### 9.7 Application-Level Stream Types (informative)
+
+The protocol treats all streams identically. Applications assign meaning:
+
+| Application concept | Stream ID pattern (example) |
+|--------------------|-----------------------------|
+| Chat channel | `channel:general` |
+| Conversation thread | `thread:550e8400-...` |
+| System announcements | `system:announcements` |
+| Agent status feed | `agent:weather-bot:status` |
+| User notifications | `user:alice:notifications` |
+
+Stream ID format is application-defined. The protocol imposes no structure beyond "it's a string."
+
+---
+
+## 10. UI Guidance (non-normative but recommended)
+
+### 10.1 Metadata-First Rendering
 
 With text streaming, UIs can render immediately upon receiving a start frame:
 
@@ -304,14 +446,14 @@ With text streaming, UIs can render immediately upon receiving a start frame:
 
 This provides a better user experience than waiting for parseable JSON.
 
-### 9.2 Streaming Indicators
+### 10.2 Streaming Indicators
 
 Common patterns:
 * Blinking cursor at end of streaming content
 * "Typing..." indicator
 * Pulsing background on the message bubble
 
-### 9.3 When to Use Object Streaming
+### 10.3 When to Use Object Streaming
 
 Use object streaming (start frame without `m`) for complex structured data that doesn't fit the `{...metadata, content}` pattern:
 
@@ -321,9 +463,9 @@ Use object streaming (start frame without `m`) for complex structured data that 
 
 For most chat messages (user input, agent responses), text streaming with metadata is simpler and more efficient.
 
-## 10. Error Handling
+## 11. Error Handling
 
-### 10.1 Error Frame
+### 11.1 Error Frame
 
 Servers MAY send error frames to communicate protocol-level errors to clients:
 
@@ -349,11 +491,11 @@ Servers MAY send error frames to communicate protocol-level errors to clients:
 * `invalid_thread` — Thread does not exist or access denied
 * `server_error` — Internal server error
 
-### 10.2 Invalid Frame JSON
+### 11.2 Invalid Frame JSON
 
 If a line is not valid JSON, receivers MUST discard that line.
 
-### 10.3 Invalid Frame Shape
+### 11.3 Invalid Frame Shape
 
 Receivers MUST ignore **message frames** (start, append, set) that:
 
@@ -364,17 +506,17 @@ Receivers MUST ignore **message frames** (start, append, set) that:
 * have `m` present but not an object
 * have `m` containing the reserved key `"content"`
 
-Control frames (sync, error) are identified by the presence of `request` or `error` fields and do not require `i`.
+Control frames (sync, unsub, error) are identified by the presence of `request` or `error` fields and do not require `i`.
 
 Unknown additional fields MUST be ignored for forward compatibility.
 
-### 10.4 Invalid Message JSON
+### 11.4 Invalid Message JSON
 
 If the buffer parses but is not a JSON object, receivers MUST treat the message as invalid (and MAY surface an error state in UI).
 
-## 11. Examples
+## 12. Examples
 
-### 11.1 Text Streaming with Metadata (recommended)
+### 12.1 Text Streaming with Metadata (recommended)
 
 Streaming an agent message:
 
@@ -391,7 +533,7 @@ Client value progression:
 3. After second append: `{"type":"agent","content":"Hello world!"}`
 4. After set: `{"type":"agent","content":"Hello world!"}` (complete, timestamp recorded)
 
-### 11.2 Object Streaming (for complex structures)
+### 12.2 Object Streaming (for complex structures)
 
 Streaming a progress update:
 
@@ -404,7 +546,7 @@ Streaming a progress update:
 
 Requires partial JSON parser for intermediate values. Note that `v` contains a JSON object directly.
 
-### 11.3 Complete Message via Set (no streaming)
+### 12.3 Complete Message via Set (no streaming)
 
 For messages that don't need streaming (e.g., user input, historical messages):
 
@@ -412,13 +554,13 @@ For messages that don't need streaming (e.g., user input, historical messages):
 {"i":"01J...","t":"2025-01-15T14:30:00.000Z","v":{"type":"user","content":"Hello!"}}
 ```
 
-### 11.4 Deleting a Message
+### 12.4 Deleting a Message
 
 ```
 {"i":"01J...","v":null}
 ```
 
-### 11.5 Interleaved Messages (transcript order by ULID)
+### 12.5 Interleaved Messages (transcript order by ULID)
 
 ```
 {"i":"01J...001","m":{"type":"agent"}}
@@ -429,7 +571,7 @@ For messages that don't need streaming (e.g., user input, historical messages):
 
 Display order (sorted by `i`): `...001` then `...002`, regardless of append order.
 
-### 11.6 Sync with Timestamp Cursor
+### 12.6 Sync with Timestamp Cursor
 
 ```
 Client → {"request":"sync","since":"2025-01-15T14:00:00.000Z"}
@@ -437,7 +579,7 @@ Server → {"i":"01J...004","t":"2025-01-15T14:30:00.000Z","v":{"type":"user","c
 Server → {"i":"01J...005","t":"2025-01-15T14:30:05.000Z","v":{"type":"agent","content":"Here's my answer"}}
 ```
 
-### 11.7 Rich Metadata
+### 12.7 Rich Metadata
 
 Metadata can contain additional fields beyond `type`:
 
@@ -448,7 +590,7 @@ Metadata can contain additional fields beyond `type`:
 
 Value during streaming: `{"type":"agent","model":"claude-3","toolUse":true,"content":"Let me search for that..."}`
 
-## 12. Conformance Checklist
+## 13. Conformance Checklist
 
 An implementation is conformant with Timbal/1.0 if it:
 
@@ -460,7 +602,10 @@ An implementation is conformant with Timbal/1.0 if it:
 * Ignores append-before-start (§5.2)
 * Builds transcript order by ULID sort (§7)
 * Supports sync requests with optional `since` cursor (§8)
-* Ignores unknown fields (§10.3)
+* Supports the `s` field for stream multiplexing when present (§9)
+* Includes `s` on all message frames when connection is multiplexed (§9.1)
+* Supports `unsub` requests to unsubscribe from streams (§9.3)
+* Ignores unknown fields (§11.3)
 
 ---
 
