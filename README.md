@@ -2,11 +2,11 @@
 
 **A streaming protocol for real-time agent conversations.**
 
-Timbal defines how messages are encoded, streamed, and synchronized in agentic chat systems. It's designed for progressive rendering, multi-agent coordination, and reliable reconnection.
+Timbal defines how messages are encoded, streamed, and routed in agentic chat systems. It's designed for progressive rendering, multi-agent coordination, and extensibility.
 
-## Protocol Layers
+## Protocol Structure
 
-Timbal is organized into three layers, each building on the one below:
+Timbal separates the **core data format** (how messages are framed and streamed) from **application-specific behavior** (how you sync, subscribe, filter). The core is small and library-friendly. Extensions layer on top.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -20,14 +20,24 @@ Timbal is organized into three layers, each building on the one below:
 └─────────────────────────────────────────┘
                    ↕
 ┌─────────────────────────────────────────┐
-│        Framing Layer                    │  How bytes hit the wire
-│   (NDJSON streaming, sync, ordering)    │  → spec/framing.md
+│        Framing Layer (core)             │  How bytes hit the wire
+│   (NDJSON, streaming, multiplexing)     │  → spec/framing.md
+└─────────────────────────────────────────┘
+                   ↕
+┌─────────────────────────────────────────┐
+│        Extensions                       │  Application-specific ops
+│   (sync, subscribe, filters, ...)       │  → spec/extensions/
 └─────────────────────────────────────────┘
 ```
 
-### [Framing Layer](spec/framing.md) — `Timbal/1.0`
+### [Framing Layer](spec/framing.md) — `Timbal/1.0` (core)
 
-The foundation. Defines NDJSON frame encoding, message streaming (start/append/set), ULID-based ordering, sync/reconnection, and stream multiplexing. Transport-agnostic — works over WebSocket, SSE, HTTP chunked, or stdio. A single connection can carry multiple independent streams.
+The foundation. Defines two frame types:
+
+- **Message frames** (`i` field) — Start, append, and set frames for streaming messages. ULID-based ordering. Stream multiplexing via `s` field.
+- **Control frames** (`c` field) — Typed extension point for application-specific operations. Core only mandates `error`.
+
+Transport-agnostic — works over WebSocket, SSE, HTTP chunked, or stdio.
 
 ### [HTTP Protocol Layer](spec/http.md) — `Timbal HTTP/1.0`
 
@@ -36,6 +46,12 @@ RESTful API for managing agent conversation threads. Clients connect via WebSock
 ### [Message Semantics Layer](spec/messages.md) — `Timbal Messages/1.0`
 
 Standard message types for agentic conversations: `user`, `agent`, `tool_call`, `tool_result`, `thinking`, plus multi-agent extensions (`status`, `error`, `agent_complete`, `agent_message`).
+
+### Extensions
+
+Extensions define control frame types for application-specific behavior. The core spec provides the extension point; extensions fill it in.
+
+- **[Sync Extension](spec/extensions/sync.md)** — History synchronization, reconnection with timestamp cursors, stream subscribe/unsubscribe. The standard pattern for WebSocket-based real-time apps.
 
 ## Quick Example
 
@@ -63,8 +79,8 @@ The client can render immediately after the start frame — metadata tells it wh
 - **ULID ordering** — Messages are sorted by their ULID identifiers. No sequence numbers needed.
 - **Metadata-first rendering** — Start frames carry metadata (type, sender), enabling UI rendering before content streams.
 - **Two streaming modes** — Text mode (metadata + content appends) for chat, object mode (JSON fragment appends) for structured data.
-- **Append-only with sync** — Clients reconnect and request only what they missed via timestamp cursors.
-- **Stream multiplexing** — A single connection can carry multiple independent streams (channels, threads, event feeds) via the `s` field. No more connection-per-thread.
+- **Stream multiplexing** — A single connection can carry multiple independent streams (channels, threads, event feeds) via the `s` field.
+- **Core vs extensions** — The framing layer defines the universal data format. Application-specific operations (sync, subscribe, filters) are control frame extensions — not baked into the core.
 - **Transport-agnostic framing** — The same NDJSON frames work over WebSocket, SSE, HTTP chunked, or stdio pipes.
 
 ## Status
