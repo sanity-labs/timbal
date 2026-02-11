@@ -74,12 +74,12 @@ Content-Type: application/json
     "content": "What's the weather in Oslo?"
   },
   "callback": "https://service.example.com/channels/ch_abc123/inbox/tok_xyz789",
-  "mcp": {
-    "url": "https://service.example.com/mcp/ch_abc123",
-    "headers": {
-      "Authorization": "Bearer eyJ..."
+  "mcp": [
+    {
+      "url": "https://service.example.com/mcp/ch_abc123",
+      "headers": { "Authorization": "Bearer eyJ..." }
     }
-  }
+  ]
 }
 ```
 
@@ -110,16 +110,18 @@ The service generates a fresh callback URL per message delivery.
 
 #### `mcp` (optional)
 
-MCP server configuration. The agent passes this directly to its MCP client library.
+Array of MCP server configurations. The agent connects to each one and makes all their tools available.
+
+Each entry is a standard MCP client config object:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `url` | string | ✅ | MCP HTTP transport endpoint URL. |
 | `headers` | object | | HTTP headers for MCP requests (auth, etc.). |
 
-The MCP server exposes whatever tools the service provides — message history, artifacts, roster, knowledge bases, file uploads. This is service-specific and not prescribed by Chorus.
+The service includes its own platform MCP server plus any additional servers configured for the channel (user-added integrations, knowledge bases, etc.). This set is service-specific and not prescribed by Chorus.
 
-The agent SHOULD treat the `mcp` object as opaque configuration — pass it to an MCP client library as-is.
+The agent SHOULD treat each entry as opaque configuration — pass it to an MCP client library as-is.
 
 ### Response
 
@@ -223,7 +225,7 @@ The connection string IS the credential. The embedded secret authenticates the s
 
 **Callback:** Self-authenticating URL. The service embeds credentials in the URL. The agent POSTs as-is. Same pattern as Slack webhooks and AWS pre-signed URLs — with HTTPS, the full URL is encrypted in transit.
 
-**MCP:** The `mcp` config contains whatever auth the service requires, typically in `headers`. The agent passes it to its MCP client library, which handles auth transparently.
+**MCP:** Each entry in the `mcp` array contains whatever auth that server requires, typically in `headers`. The agent passes each config to its MCP client library, which handles auth transparently.
 
 No registration dance. No key exchange. Credentials arrive with every message.
 
@@ -231,13 +233,13 @@ No registration dance. No key exchange. Credentials arrive with every message.
 
 1. **Stateless delivery.** Each POST contains everything the agent needs — channel identity, callback, MCP config. No persistent connections, no session state.
 
-2. **MCP for capabilities.** The service's features are standard MCP tools. Different services expose different tools. The agent discovers them via MCP tool listing.
+2. **MCP for capabilities.** The service's features are standard MCP tools. The service provides its own platform MCP plus any user-configured servers. The agent discovers tools from all of them via standard MCP tool listing.
 
 3. **Callback for output.** The agent's visible activity — messages, tool reports, status — goes through the callback. Simple POSTs, no protocol negotiation.
 
 4. **Service-agnostic.** The agent doesn't know or care what service it's talking to. Miriad, Slack, Discord — all invisible behind the same interface.
 
-5. **Fresh credentials per message.** Callback URLs and MCP configs are provided with every delivery. The service can rotate freely. The agent uses what it's given.
+5. **Fresh credentials per message.** Callback URLs and MCP configs are provided with every delivery. The service can rotate freely. The agent uses what it's given — including reconnecting MCP servers if the config changed.
 
 6. **Connection string simplicity.** One URL to connect. One secret to manage. Copy, paste, done.
 
@@ -281,10 +283,16 @@ Content-Type: application/json
     "content": "@timber can you review the auth spec?"
   },
   "callback": "https://miriad.example.com/channels/01HX.../inbox/tok_eyJhbG",
-  "mcp": {
-    "url": "https://miriad.example.com/mcp/01HX...",
-    "headers": { "Authorization": "Bearer eyJhbGciOi..." }
-  }
+  "mcp": [
+    {
+      "url": "https://miriad.example.com/mcp/01HX...",
+      "headers": { "Authorization": "Bearer eyJhbGciOi..." }
+    },
+    {
+      "url": "https://github-mcp.example.com/repos/sanity-labs",
+      "headers": { "Authorization": "Bearer ghp_..." }
+    }
+  ]
 }
 ```
 
@@ -299,14 +307,12 @@ Agent:
 
 ## 7. Open Questions
 
-1. **Multiple MCP servers?** Should `mcp` be an array? A service might provide separate servers for different capability sets.
+1. **Streaming callback?** NDJSON streaming (keep connection open, send multiple JSON objects) instead of separate POSTs? Lower overhead for chatty agents.
 
-2. **Streaming callback?** NDJSON streaming (keep connection open, send multiple JSON objects) instead of separate POSTs? Lower overhead for chatty agents.
+2. **Proactive messages?** This protocol is reactive (message in → agent acts). What about unprompted agent messages? Options: (a) agent keeps last callback URL, (b) separate endpoint, (c) out of scope.
 
-3. **Proactive messages?** This protocol is reactive (message in → agent acts). What about unprompted agent messages? Options: (a) agent keeps last callback URL, (b) separate endpoint, (c) out of scope.
+3. **Structured content?** Should `message.content` support images, files, embeds? Or is that always through MCP tools?
 
-4. **Structured content?** Should `message.content` support images, files, embeds? Or is that always through MCP tools?
+4. **Batch delivery?** Multiple messages in one POST for catch-up scenarios?
 
-5. **Batch delivery?** Multiple messages in one POST for catch-up scenarios?
-
-6. **Agent identity?** Should the agent declare itself (name, avatar, capabilities)? Or is that handled at connection time?
+5. **Agent identity?** Should the agent declare itself (name, avatar, capabilities)? Or is that handled at connection time?
