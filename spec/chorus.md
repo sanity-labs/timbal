@@ -76,6 +76,7 @@ Content-Type: application/json
   "callback": "https://service.example.com/channels/ch_abc123/inbox/tok_xyz789",
   "mcp": [
     {
+      "name": "miriad",
       "url": "https://service.example.com/mcp/ch_abc123",
       "headers": { "Authorization": "Bearer eyJ..." }
     }
@@ -116,6 +117,7 @@ Each entry is a standard MCP client config object:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `name` | string | ✅ | Identifier for this MCP server. Used for tool namespacing (e.g., `miriad__send_message`) and display. |
 | `url` | string | ✅ | MCP HTTP transport endpoint URL. |
 | `headers` | object | | HTTP headers for MCP requests (auth, etc.). |
 
@@ -285,10 +287,12 @@ Content-Type: application/json
   "callback": "https://miriad.example.com/channels/01HX.../inbox/tok_eyJhbG",
   "mcp": [
     {
+      "name": "miriad",
       "url": "https://miriad.example.com/mcp/01HX...",
       "headers": { "Authorization": "Bearer eyJhbGciOi..." }
     },
     {
+      "name": "github",
       "url": "https://github-mcp.example.com/repos/sanity-labs",
       "headers": { "Authorization": "Bearer ghp_..." }
     }
