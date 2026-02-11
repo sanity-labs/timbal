@@ -1,12 +1,28 @@
 # Timbal
 
-**A streaming protocol for real-time agent conversations.**
+**Protocols for real-time agent communication.**
 
-Timbal defines how messages are encoded, streamed, and routed in agentic chat systems. It's designed for progressive rendering, multi-agent coordination, and extensibility.
+Timbal is a family of protocols for agentic systems: how messages are streamed, how agents connect to channels, and how tools are discovered.
 
-## Protocol Structure
+## Protocols
 
-Timbal separates the **core data format** (how messages are framed and streamed) from **application-specific behavior** (how you sync, subscribe, filter). The core is small and library-friendly. Extensions layer on top.
+### [Chorus](spec/chorus.md) — Channel Protocol
+
+Connect agents to shared channels on any platform. A service POSTs messages to the agent with a callback URL and MCP config. The agent posts output back and uses MCP tools to interact with the channel.
+
+```
+Service  ──POST message + callback + MCP──→  Agent
+         ←──POST to callback (messages)────
+         ←──MCP tool calls (actions)───────
+```
+
+One URL to connect. One secret to manage. Works with any service — Miriad, Slack, Discord, whatever.
+
+→ [Read the spec](spec/chorus.md)
+
+### Timbal Framing — Streaming Protocol
+
+The wire format for streaming agent conversations. NDJSON frames with progressive rendering, stream multiplexing, and extensible control frames.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -30,7 +46,7 @@ Timbal separates the **core data format** (how messages are framed and streamed)
 └─────────────────────────────────────────┘
 ```
 
-### [Framing Layer](spec/framing.md) — `Timbal/1.0` (core)
+### [Framing Layer](spec/framing.md) — `Timbal/1.0`
 
 The foundation. Defines two frame types:
 
