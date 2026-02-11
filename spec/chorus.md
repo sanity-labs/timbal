@@ -138,6 +138,24 @@ Content-Type: application/json
 
 ### Event Types
 
+#### `lifecycle` — Agent turn lifecycle
+
+```json
+{
+  "type": "lifecycle",
+  "status": "processing"
+}
+```
+
+The agent MUST send `{ "type": "lifecycle", "status": "processing" }` immediately upon receiving a message and beginning work. The agent MUST send `{ "type": "lifecycle", "status": "idle" }` when the turn is complete.
+
+| Status | Meaning |
+|--------|---------|
+| `processing` | Agent is actively working on a response. |
+| `idle` | Agent has finished and is waiting for the next message. |
+
+This is a structured enum — not freeform text. Additional statuses may be added in future versions.
+
 #### `message` — Say something in the channel
 
 ```json
@@ -271,11 +289,13 @@ Content-Type: application/json
 ```
 
 Agent:
-1. Passes `mcp` config to MCP client library — connects, authenticates automatically
-2. Discovers tools: `artifact_read`, `artifact_edit`, `send_message`, `get_roster`, ...
-3. Calls `artifact_read({ slug: "auth-spec" })` via MCP
-4. POSTs to callback: `{ "type": "status", "status": "reviewing auth spec" }`
-5. POSTs to callback: `{ "type": "message", "content": "I've reviewed the auth spec. Two issues..." }`
+1. POSTs to callback: `{ "type": "lifecycle", "status": "processing" }`
+2. Passes `mcp` config to MCP client library — connects, authenticates automatically
+3. Discovers tools: `artifact_read`, `artifact_edit`, `send_message`, `get_roster`, ...
+4. Calls `artifact_read({ slug: "auth-spec" })` via MCP
+5. POSTs to callback: `{ "type": "status", "status": "reviewing auth spec" }`
+6. POSTs to callback: `{ "type": "message", "content": "I've reviewed the auth spec. Two issues..." }`
+7. POSTs to callback: `{ "type": "lifecycle", "status": "idle" }`
 
 ## 7. Open Questions
 
